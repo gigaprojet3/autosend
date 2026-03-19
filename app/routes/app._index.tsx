@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import { type ActionFunctionArgs, type LoaderFunctionArgs } from "react-router";
 import { useFetcher, useLoaderData } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
@@ -321,7 +321,6 @@ export default function Index() {
   // Live state for status and QR (kept up to date by polling)
   const [liveStatus, setLiveStatus] = useState(loaderData.status);
   const [liveQr, setLiveQr] = useState(loaderData.qr);
-  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Merge fetcher action data with loader/live data
   const chats = (fetcher.data as any)?.chats ?? loaderData.chats;
@@ -366,29 +365,37 @@ export default function Index() {
 
   // Poll /api/whatsapp/status every second while not connected
   useEffect(() => {
-    if (pollingRef.current) {
-      clearInterval(pollingRef.current);
-      pollingRef.current = null;
-    }
-
     if (isConnected) return;
 
+    const controller = new AbortController();
     const shop = loaderData.shop;
-    pollingRef.current = setInterval(async () => {
+
+    let timeoutId: ReturnType<typeof setTimeout>;
+
+    const poll = async () => {
       try {
-        const res = await fetch(`/api/whatsapp/status?shop=${encodeURIComponent(shop)}`);
-        if (res.ok) {
+        const res = await fetch(
+          `/api/whatsapp/status?shop=${encodeURIComponent(shop)}`,
+          { signal: controller.signal },
+        );
+        if (res.ok && !controller.signal.aborted) {
           const data = await res.json() as { status: string; qr: string | null };
           setLiveStatus(data.status as any);
           setLiveQr(data.qr ?? undefined);
         }
       } catch {
-        // ignore network errors during polling
+        // ignore network / abort errors
       }
-    }, 1000);
+      if (!controller.signal.aborted) {
+        timeoutId = setTimeout(poll, 1000);
+      }
+    };
+
+    timeoutId = setTimeout(poll, 1000);
 
     return () => {
-      if (pollingRef.current) clearInterval(pollingRef.current);
+      controller.abort();
+      clearTimeout(timeoutId);
     };
   }, [isConnected]);
 
