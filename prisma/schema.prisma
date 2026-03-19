@@ -107,4 +107,6 @@ model MessageLog {
   content        String
   error          String?
   createdAt      DateTime @default(now())
+
+  @@index([shop, orderId])
 }

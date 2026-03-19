@@ -17,6 +17,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     console.log(`Received ${topic} webhook for ${shop}`);
 
+    // 0. Deduplicate — skip if this order was already sent successfully
+    const alreadySent = await db.messageLog.findFirst({
+        where: { shop, orderId: String((payload as any).id), status: 'SENT' },
+    });
+    if (alreadySent) {
+        console.log(`⏭️ Order ${(payload as any).name} already sent — ignoring duplicate webhook`);
+        return new Response();
+    }
+
     // 1. Check if order contains at least one selected product
     const selectedProducts = await db.selectedProduct.findMany({ where: { shop } });
 
