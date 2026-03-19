@@ -17,13 +17,30 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     console.log(`Received ${topic} webhook for ${shop}`);
 
-    // 1. Check subscription / WhatsApp connection status
-    // For MVP, we assume if they installed the app, they want this.
-    // But we should check if they have a valid WhatsApp session.
-    // We can check our local 'sessions' map via getSessionStatus (requires importing from service)
+    // 1. Check if order contains at least one selected product
+    const selectedProducts = await db.selectedProduct.findMany({ where: { shop } });
 
-    // 2. Format Message
-    const itemsList = order.line_items.map((item: any) => {
+    if (selectedProducts.length === 0) {
+        console.log(`⏭️ No products configured for ${shop} — skipping WhatsApp send`);
+        return new Response();
+    }
+            
+    const selectedProductIds = new Set(selectedProducts.map((p) => p.productId));
+
+    // Check if any line item's product_id matches a selected product
+    const matchingItems = order.line_items.filter((item: any) =>
+        selectedProductIds.has(String(item.product_id))
+    );
+
+    if (matchingItems.length === 0) {
+        console.log(`⏭️ Order ${order.name} has no matching selected products — skipping WhatsApp send`);
+        return new Response();
+    }
+
+    console.log(`✅ Order ${order.name} matches ${matchingItems.length} selected product(s) — sending to WhatsApp`);
+
+    // 2. Format Message (only include matching products)
+    const itemsList = matchingItems.map((item: any) => {
         return `${item.quantity}x ${item.name}`;
     }).join('\n');
 

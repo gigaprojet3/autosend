@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from "react";
 import { type ActionFunctionArgs, type LoaderFunctionArgs } from "react-router";
 import { useFetcher, useLoaderData } from "react-router";
 import { useAppBridge } from "@shopify/app-bridge-react";
-import { Page, Layout, Text, Card, Button, BlockStack, ChoiceList, Badge, Divider } from "@shopify/polaris";
+import { Page, Layout, Text, Card, Button, BlockStack, Badge, Divider, Spinner } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import { getSessionStatus, getQrCode, initWhatsApp, clearSession, getChats } from "../services/whatsapp.server";
 import db from "../db.server";
@@ -12,6 +12,7 @@ type Chat = {
   name: string;
   isGroup: boolean;
   unreadCount: number;
+  profilePicUrl: string | null;
 };
 
 // We need to re-export boundary for error handling
@@ -38,17 +39,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
   }
 
+  // Récupérer les produits sélectionnés
+  const selectedProducts = await db.selectedProduct.findMany({ where: { shop } });
+
   return {
     shop,
     status,
     qr,
     targetJid: dbSession?.targetJid,
-    chats
+    chats,
+    selectedProducts,
   };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session, admin } = await authenticate.admin(request);
   const shop = session.shop;
   const formData = await request.formData();
   const intent = formData.get("intent");
@@ -222,6 +227,89 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     };
   }
 
+  if (intent === "fetch_products") {
+    // Fetch all products from Shopify store via Admin GraphQL API
+    try {
+      const response = await admin.graphql(`
+        query {
+          products(first: 250) {
+            edges {
+              node {
+                id
+                title
+                featuredMedia {
+                  preview {
+                    image {
+                      url
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      `);
+      const data = await response.json();
+      const products = data.data.products.edges.map((edge: any) => ({
+        id: edge.node.id.replace('gid://shopify/Product/', ''),
+        title: edge.node.title,
+        imageUrl: edge.node.featuredMedia?.preview?.image?.url || null,
+      }));
+      return { products };
+    } catch (error) {
+      console.error('Error fetching products:', error);
+      return { products: [], error: 'Erreur lors de la récupération des produits' };
+    }
+  }
+
+  if (intent === "save_products") {
+    const productsJson = formData.get("products") as string;
+    if (!productsJson) return { error: "Aucun produit fourni" };
+
+    try {
+      const products = JSON.parse(productsJson) as Array<{ id: string; title: string; imageUrl: string | null }>;
+
+      // Remove all existing selections for this shop
+      await db.selectedProduct.deleteMany({ where: { shop } });
+
+      // Insert new selections
+      if (products.length > 0) {
+        await db.$transaction(
+          products.map((p) =>
+            db.selectedProduct.create({
+              data: {
+                shop,
+                productId: p.id,
+                title: p.title,
+                imageUrl: p.imageUrl,
+              },
+            })
+          )
+        );
+      }
+
+      const selectedProducts = await db.selectedProduct.findMany({ where: { shop } });
+      return { success: true, selectedProducts };
+    } catch (error) {
+      console.error('Error saving products:', error);
+      return { error: 'Erreur lors de la sauvegarde des produits' };
+    }
+  }
+
+  if (intent === "remove_product") {
+    const productId = formData.get("productId") as string;
+    if (!productId) return { error: "ID produit manquant" };
+
+    try {
+      await db.selectedProduct.deleteMany({ where: { shop, productId } });
+      const selectedProducts = await db.selectedProduct.findMany({ where: { shop } });
+      return { success: true, selectedProducts };
+    } catch (error) {
+      console.error('Error removing product:', error);
+      return { error: 'Erreur lors de la suppression du produit' };
+    }
+  }
+
   return null;
 };
 
@@ -238,6 +326,7 @@ export default function Index() {
   // Merge fetcher action data with loader/live data
   const chats = (fetcher.data as any)?.chats ?? loaderData.chats;
   const targetJid = (fetcher.data as any)?.targetJid ?? loaderData.targetJid;
+  const selectedProducts = (fetcher.data as any)?.selectedProducts ?? loaderData.selectedProducts;
 
   const status = liveStatus;
   const qr = liveQr;
@@ -248,6 +337,12 @@ export default function Index() {
   const isDisconnected = status === 'disconnected' || !status;
   const isLoading = fetcher.state !== "idle";
 
+  // Product selector state
+  const [showProductSelector, setShowProductSelector] = useState(false);
+  const [shopProducts, setShopProducts] = useState<Array<{ id: string; title: string; imageUrl: string | null }>>([]);
+  const [checkedProducts, setCheckedProducts] = useState<Set<string>>(new Set());
+  const [productsLoading, setProductsLoading] = useState(false);
+
   // When action returns, sync live state
   useEffect(() => {
     const data = fetcher.data as any;
@@ -256,6 +351,16 @@ export default function Index() {
     }
     if (data?.qr !== undefined) {
       setLiveQr(data.qr ?? undefined);
+    }
+    // Handle fetched products from Shopify
+    if (data?.products) {
+      setShopProducts(data.products);
+      // Pre-check already selected products
+      const alreadySelected = new Set<string>(
+        (data.selectedProducts ?? selectedProducts ?? []).map((p: any) => p.productId as string)
+      );
+      setCheckedProducts(alreadySelected);
+      setProductsLoading(false);
     }
   }, [fetcher.data]);
 
@@ -380,16 +485,26 @@ export default function Index() {
                     <Text as="p">
                       <Text as="span" tone="success">✅ Destination configurée:</Text>
                     </Text>
-                    <Card>
-                      <BlockStack gap="100">
-                        <Text as="p" fontWeight="bold">
-                          {chats.find(chat => chat.id === targetJid)?.name || targetJid}
-                        </Text>
-                        {chats.find(chat => chat.id === targetJid)?.isGroup && (
-                          <Badge tone="info">Groupe</Badge>
-                        )}
-                      </BlockStack>
-                    </Card>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px', backgroundColor: '#f6f6f7', borderRadius: '8px' }}>
+                      {(() => {
+                        const selected = chats.find((chat: Chat) => chat.id === targetJid);
+                        return (
+                          <>
+                            <div style={{ width: 48, height: 48, borderRadius: '50%', overflow: 'hidden', flexShrink: 0, backgroundColor: '#e1e1e1', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                              {selected?.profilePicUrl ? (
+                                <img src={selected.profilePicUrl} alt={selected.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                              ) : (
+                                <span style={{ fontSize: '20px', color: '#8c9196' }}>{selected?.isGroup ? '👥' : '👤'}</span>
+                              )}
+                            </div>
+                            <div>
+                              <Text as="p" fontWeight="bold">{selected?.name || targetJid}</Text>
+                              {selected?.isGroup && <Badge tone="info">Groupe</Badge>}
+                            </div>
+                          </>
+                        );
+                      })()}
+                    </div>
                     <Button
                       variant="plain"
                       onClick={() => fetcher.submit({ intent: 'clear_destination' }, { method: "POST" })}
@@ -404,31 +519,68 @@ export default function Index() {
                       Sélectionnez la conversation où les nouvelles commandes seront envoyées automatiquement :
                     </Text>
 
-                    {chats.length > 0 ? (
-                      <ChoiceList
-                        title="Conversations disponibles"
-                        choices={chats.map(chat => ({
-                          label: `${chat.name}${chat.isGroup ? ' (Groupe)' : ''}`,
-                          value: chat.id,
-                          renderChildren: () => (
-                            <BlockStack gap="100">
-                              {chat.isGroup && <Badge tone="info">Groupe</Badge>}
-                              {chat.unreadCount > 0 && (
-                                <Badge tone="attention">{`${String(chat.unreadCount)} non lus`}</Badge>
-                              )}
-                            </BlockStack>
-                          )
-                        }))}
-                        selected={targetJid ? [targetJid] : []}
-                        onChange={(selected) => {
-                          if (selected.length > 0) {
-                            fetcher.submit(
-                              { intent: 'set_destination', targetJid: selected[0] },
-                              { method: "POST" }
-                            );
-                          }
-                        }}
-                      />
+                    {isLoading && chats.length === 0 ? (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '24px', justifyContent: 'center' }}>
+                        <Spinner size="small" />
+                        <Text as="p" tone="subdued">
+                          Chargement des groupes WhatsApp en cours, veuillez patienter pour sélectionner le groupe destinataire...
+                        </Text>
+                      </div>
+                    ) : chats.length > 0 ? (
+                      <div style={{
+                        maxHeight: '60vh',
+                        overflowY: 'auto',
+                        scrollBehavior: 'smooth',
+                        paddingRight: '4px',
+                      }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                          {chats.map((chat: Chat) => (
+                            <button
+                              key={chat.id}
+                              type="button"
+                              onClick={() => {
+                                fetcher.submit(
+                                  { intent: 'set_destination', targetJid: chat.id },
+                                  { method: "POST" }
+                                );
+                              }}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '12px',
+                                padding: '10px 12px',
+                                border: 'none',
+                                borderRadius: '8px',
+                                backgroundColor: 'transparent',
+                                cursor: 'pointer',
+                                width: '100%',
+                                textAlign: 'left',
+                                transition: 'background-color 0.15s ease',
+                              }}
+                              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#f1f1f1')}
+                              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                            >
+                              <div style={{ width: 44, height: 44, borderRadius: '50%', overflow: 'hidden', flexShrink: 0, backgroundColor: '#e1e1e1', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                {chat.profilePicUrl ? (
+                                  <img src={chat.profilePicUrl} alt={chat.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                ) : (
+                                  <span style={{ fontSize: '18px', color: '#8c9196' }}>{chat.isGroup ? '👥' : '👤'}</span>
+                                )}
+                              </div>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontWeight: 600, fontSize: '14px', color: '#202223', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                  {chat.name}
+                                </div>
+                                <div style={{ fontSize: '12px', color: '#6d7175', display: 'flex', gap: '6px', alignItems: 'center' }}>
+                                  {chat.isGroup && <Badge tone="info">Groupe</Badge>}
+                                  {chat.unreadCount > 0 && <Badge tone="attention">{`${String(chat.unreadCount)} non lus`}</Badge>}
+                                  {!chat.isGroup && <span>{chat.id.replace('@s.whatsapp.net', '')}</span>}
+                                </div>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                     ) : (
                       <BlockStack gap="200">
                         <Text as="p" tone="subdued">
@@ -454,6 +606,192 @@ export default function Index() {
             </Card>
           </Layout.Section>
         )}
+
+        {/* Section de sélection des produits — obligatoire */}
+        <Layout.Section>
+          <Card>
+            <BlockStack gap="400">
+              <Text as="h2" variant="headingMd">
+                🛒 Produits suivis
+              </Text>
+
+              <Text as="p" tone="subdued">
+                Sélectionnez les produits dont les commandes déclencheront un envoi automatique sur WhatsApp.
+                Les commandes contenant uniquement des produits non sélectionnés ne seront pas envoyées.
+              </Text>
+
+              {selectedProducts.length === 0 && (
+                <div style={{ padding: '12px', backgroundColor: '#fff3cd', borderRadius: '8px', border: '1px solid #ffc107' }}>
+                  <Text as="p" fontWeight="bold" tone="caution">
+                    ⚠️ Aucun produit sélectionné — les envois automatiques sont désactivés.
+                  </Text>
+                  <Text as="p" tone="subdued">
+                    Vous devez sélectionner au moins un produit pour activer l'envoi automatique des commandes.
+                  </Text>
+                </div>
+              )}
+
+              {/* Afficher les produits déjà sélectionnés */}
+              {selectedProducts.length > 0 && (
+                <BlockStack gap="200">
+                  <Text as="p" fontWeight="semibold">
+                    {selectedProducts.length} produit{selectedProducts.length > 1 ? 's' : ''} sélectionné{selectedProducts.length > 1 ? 's' : ''} :
+                  </Text>
+                  <div style={{ maxHeight: '200px', overflowY: 'auto' }}>
+                    {selectedProducts.map((product: any) => (
+                      <div
+                        key={product.productId}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '10px',
+                          padding: '8px 12px',
+                          borderBottom: '1px solid #e1e3e5',
+                        }}
+                      >
+                        <div style={{ width: 36, height: 36, borderRadius: '6px', overflow: 'hidden', flexShrink: 0, backgroundColor: '#f1f1f1', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          {product.imageUrl ? (
+                            <img src={product.imageUrl} alt={product.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                          ) : (
+                            <span style={{ fontSize: '16px' }}>📦</span>
+                          )}
+                        </div>
+                        <div style={{ flex: 1, fontSize: '14px', color: '#202223' }}>{product.title}</div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            fetcher.submit(
+                              { intent: 'remove_product', productId: product.productId },
+                              { method: 'POST' }
+                            );
+                          }}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            cursor: 'pointer',
+                            color: '#bf0711',
+                            fontSize: '13px',
+                            padding: '4px 8px',
+                          }}
+                        >
+                          ✕ Retirer
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </BlockStack>
+              )}
+
+              {/* Bouton pour ouvrir/fermer le sélecteur */}
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  if (!showProductSelector) {
+                    setProductsLoading(true);
+                    setShowProductSelector(true);
+                    fetcher.submit({ intent: 'fetch_products' }, { method: 'POST' });
+                  } else {
+                    setShowProductSelector(false);
+                  }
+                }}
+                loading={productsLoading}
+              >
+                {showProductSelector ? '▲ Fermer la liste des produits' : '▼ Sélectionner des produits'}
+              </Button>
+
+              {/* Liste déroulante des produits */}
+              {showProductSelector && (
+                <BlockStack gap="300">
+                  {productsLoading ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '20px', justifyContent: 'center' }}>
+                      <Spinner size="small" />
+                      <Text as="p" tone="subdued">Chargement des produits de votre boutique...</Text>
+                    </div>
+                  ) : shopProducts.length > 0 ? (
+                    <>
+                      <div style={{
+                        maxHeight: '50vh',
+                        overflowY: 'auto',
+                        border: '1px solid #e1e3e5',
+                        borderRadius: '8px',
+                      }}>
+                        {shopProducts.map((product) => {
+                          const isChecked = checkedProducts.has(product.id);
+                          return (
+                            <label
+                              key={product.id}
+                              style={{
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '12px',
+                                padding: '10px 14px',
+                                cursor: 'pointer',
+                                borderBottom: '1px solid #f1f1f1',
+                                backgroundColor: isChecked ? '#f0fdf4' : 'transparent',
+                                transition: 'background-color 0.15s ease',
+                              }}
+                              onMouseEnter={(e) => { if (!isChecked) e.currentTarget.style.backgroundColor = '#f6f6f7'; }}
+                              onMouseLeave={(e) => { if (!isChecked) e.currentTarget.style.backgroundColor = 'transparent'; }}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={() => {
+                                  setCheckedProducts((prev) => {
+                                    const next = new Set(prev);
+                                    if (next.has(product.id)) {
+                                      next.delete(product.id);
+                                    } else {
+                                      next.add(product.id);
+                                    }
+                                    return next;
+                                  });
+                                }}
+                                style={{ width: 18, height: 18, cursor: 'pointer' }}
+                              />
+                              <div style={{ width: 40, height: 40, borderRadius: '6px', overflow: 'hidden', flexShrink: 0, backgroundColor: '#f1f1f1', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                {product.imageUrl ? (
+                                  <img src={product.imageUrl} alt={product.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                ) : (
+                                  <span style={{ fontSize: '18px' }}>📦</span>
+                                )}
+                              </div>
+                              <div style={{ flex: 1, fontSize: '14px', color: '#202223', fontWeight: isChecked ? 600 : 400 }}>
+                                {product.title}
+                              </div>
+                              {isChecked && <Badge tone="success">Sélectionné</Badge>}
+                            </label>
+                          );
+                        })}
+                      </div>
+
+                      <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+                        <Button
+                          variant="primary"
+                          onClick={() => {
+                            const productsToSave = shopProducts
+                              .filter((p) => checkedProducts.has(p.id))
+                              .map((p) => ({ id: p.id, title: p.title, imageUrl: p.imageUrl }));
+                            fetcher.submit(
+                              { intent: 'save_products', products: JSON.stringify(productsToSave) },
+                              { method: 'POST' }
+                            );
+                            setShowProductSelector(false);
+                          }}
+                          disabled={checkedProducts.size === 0}
+                        >
+                          Enregistrer la sélection ({String(checkedProducts.size)} produit{checkedProducts.size > 1 ? 's' : ''})
+                        </Button>
+                      </div>
+                    </>
+                  ) : (
+                    <Text as="p" tone="subdued">Aucun produit trouvé dans votre boutique.</Text>
+                  )}
+                </BlockStack>
+              )}
+            </BlockStack>
+          </Card>
+        </Layout.Section>
 
         <Layout.Section>
           <Card>

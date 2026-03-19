@@ -1,3 +1,4 @@
+import type { LoaderFunctionArgs } from "react-router";
 import { useLoaderData } from "react-router";
 import {
     Page,
@@ -12,7 +13,8 @@ import {
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
 
-export async function loader({ request }: any) {
+
+export const loader = async ({ request }: LoaderFunctionArgs) => {
     const { session } = await authenticate.admin(request);
 
     const logs = await db.messageLog.findMany({
@@ -22,7 +24,7 @@ export async function loader({ request }: any) {
     });
 
     return { logs };
-}
+};
 
 export default function Messages() {
     const { logs } = useLoaderData<typeof loader>();

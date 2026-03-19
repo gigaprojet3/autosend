@@ -2,10 +2,23 @@ import "@shopify/shopify-app-react-router/adapters/node";
 import {
   ApiVersion,
   AppDistribution,
+  BillingInterval,
   shopifyApp,
 } from "@shopify/shopify-app-react-router/server";
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
 import prisma from "./db.server";
+
+export const PLAN_FREE = "Free";
+export const PLAN_STARTER = "Starter";
+export const PLAN_BUSINESS = "Business";
+export const PLAN_PRO = "Pro";
+
+export const PLANS: Record<string, { name: string; orderLimit: number | null }> = {
+  [PLAN_FREE]:     { name: "Free",     orderLimit: 30 },
+  [PLAN_STARTER]:  { name: "Starter",  orderLimit: 250 },
+  [PLAN_BUSINESS]: { name: "Business", orderLimit: 600 },
+  [PLAN_PRO]:      { name: "Pro",      orderLimit: null }, // unlimited
+};
 
 const shopify = shopifyApp({
   apiKey: process.env.SHOPIFY_API_KEY,
@@ -16,6 +29,35 @@ const shopify = shopifyApp({
   authPathPrefix: "/auth",
   sessionStorage: new PrismaSessionStorage(prisma),
   distribution: AppDistribution.AppStore,
+  billing: {
+    [PLAN_STARTER]: {
+      lineItems: [
+        {
+          amount: 9.99,
+          currencyCode: "USD",
+          interval: BillingInterval.Every30Days as any,
+        },
+      ],
+    },
+    [PLAN_BUSINESS]: {
+      lineItems: [
+        {
+          amount: 14.99,
+          currencyCode: "USD",
+          interval: BillingInterval.Every30Days as any,
+        },
+      ],
+    },
+    [PLAN_PRO]: {
+      lineItems: [
+        {
+          amount: 24.99,
+          currencyCode: "USD",
+          interval: BillingInterval.Every30Days as any,
+        },
+      ],
+    },
+  },
   future: {
     expiringOfflineAccessTokens: true,
   },

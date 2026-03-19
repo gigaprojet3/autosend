@@ -36,10 +36,66 @@ model Session {
 model WhatsAppSession {
   id             String   @id @default(uuid())
   shop           String   @unique
-  creds          String?  // JSON stringified credentials (optional if using file system)
-  targetJid      String?  // The WhatsApp JID to send messages to (group or user)
+  creds          String?  // JSON stringified credentials
+  targetJid      String?  // The WhatsApp JID to send messages to
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+  authKeys       WhatsAppAuthKey[]
+  chats          WhatsAppChat[]
+  contacts       WhatsAppContact[]
+}
+
+model WhatsAppAuthKey {
+  id        String   @id @default(uuid())
+  shop      String
+  keyType   String   // e.g. "pre-key", "session", "sender-key", "app-state-sync-key", etc.
+  keyId     String   // the key identifier
+  value     String   // JSON stringified key data
+  updatedAt DateTime @updatedAt
+  session   WhatsAppSession @relation(fields: [shop], references: [shop], onDelete: Cascade)
+
+  @@unique([shop, keyType, keyId])
+  @@index([shop, keyType])
+}
+
+model WhatsAppChat {
+  id        String   @id @default(uuid())
+  shop      String
+  jid       String   // chat JID
+  name      String?
+  isGroup   Boolean  @default(false)
+  metadata  String?  // JSON extra data (subject, unreadCount, etc.)
+  updatedAt DateTime @updatedAt
+  session   WhatsAppSession @relation(fields: [shop], references: [shop], onDelete: Cascade)
+
+  @@unique([shop, jid])
+  @@index([shop])
+}
+
+model WhatsAppContact {
+  id        String   @id @default(uuid())
+  shop      String
+  jid       String
+  name      String?
+  notify    String?  // pushName
+  metadata  String?  // JSON extra data
+  updatedAt DateTime @updatedAt
+  session   WhatsAppSession @relation(fields: [shop], references: [shop], onDelete: Cascade)
+
+  @@unique([shop, jid])
+  @@index([shop])
+}
+
+model SelectedProduct {
+  id          String   @id @default(uuid())
+  shop        String
+  productId   String   // Shopify product ID (numeric as string)
+  title       String   // Product title for display
+  imageUrl    String?  // Product image URL
+  createdAt   DateTime @default(now())
+
+  @@unique([shop, productId])
+  @@index([shop])
 }
 
 model MessageLog {
