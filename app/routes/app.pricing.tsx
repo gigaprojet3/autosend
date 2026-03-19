@@ -1,8 +1,9 @@
+import { useEffect } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { redirect } from "react-router";
-import { useLoaderData, useSubmit, useNavigation } from "react-router";
+import { useLoaderData, useActionData, useSubmit, useNavigation } from "react-router";
 import { Page, Card, Text, BlockStack, Button, InlineGrid, Badge, Divider, InlineStack, Banner } from "@shopify/polaris";
-import { authenticate, PLAN_FREE, PLAN_STARTER, PLAN_BUSINESS, PLAN_PRO, PLANS } from "../shopify.server";
+import { PLAN_FREE, PLAN_STARTER, PLAN_BUSINESS, PLAN_PRO, PLANS } from "../plans";
+import { authenticate } from "../shopify.server";
 import db from "../db.server";
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -29,12 +30,13 @@ const ACTIVE_SUBSCRIPTION_QUERY = `#graphql
   }
 `;
 
-async function getActivePlanName(admin: any): Promise<string> {
+async function getActiveSubscription(admin: any): Promise<{ id: string; name: string } | null> {
     const response = await admin.graphql(ACTIVE_SUBSCRIPTION_QUERY);
     const data = await response.json();
     const subs = data?.data?.currentAppInstallation?.activeSubscriptions ?? [];
     const active = subs.find((s: any) => s.status === "ACTIVE");
-    return active?.name ?? PLAN_FREE;
+    if (!active) return null;
+    return { id: active.id, name: active.name };
 }
 
 // ── Loader ───────────────────────────────────────────────────────────
@@ -42,7 +44,8 @@ async function getActivePlanName(admin: any): Promise<string> {
 export const loader = async ({ request }: LoaderFunctionArgs) => {
     const { admin, session } = await authenticate.admin(request);
 
-    const activePlan = await getActivePlanName(admin);
+    const sub = await getActiveSubscription(admin);
+    const activePlan = sub?.name ?? PLAN_FREE;
 
     // Count orders sent this billing period (current calendar month)
     const now = new Date();
@@ -67,43 +70,68 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 // ── Action ───────────────────────────────────────────────────────────
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-    const { billing, admin } = await authenticate.admin(request);
+    const { billing, admin, session } = await authenticate.admin(request);
     const formData = await request.formData();
     const selectedPlan = formData.get("plan") as string;
 
-    // Helper: cancel the current active subscription if any
-    async function cancelCurrentSubscription() {
-        const response = await admin.graphql(ACTIVE_SUBSCRIPTION_QUERY);
-        const data = await response.json();
-        const subs = data?.data?.currentAppInstallation?.activeSubscriptions ?? [];
-        const active = subs.find((s: any) => s.status === "ACTIVE");
-        if (active) {
-            await billing.cancel({
-                subscriptionId: active.id,
-                isTest: true,
-                prorate: true,
-            });
-        }
+    if (!selectedPlan) {
+        return { error: "Aucun plan sélectionné.", confirmationUrl: null };
     }
 
-    // If downgrading to Free, cancel the active subscription
+    const sub = await getActiveSubscription(admin);
+    const currentPlan = sub?.name ?? PLAN_FREE;
+
+    // Already on this plan
+    if (selectedPlan === currentPlan) {
+        return { error: null, confirmationUrl: null };
+    }
+
+    // ── Downgrade to Free ────────────────────────────────────────────
     if (selectedPlan === PLAN_FREE) {
-        await cancelCurrentSubscription();
-        return redirect("/app/pricing");
+        if (sub) {
+            await billing.cancel({ subscriptionId: sub.id, prorate: true });
+        }
+        return { error: null, confirmationUrl: null };
     }
 
-    // For paid plans: cancel existing then request new via Shopify Billing API
+    // ── Upgrade / switch to a paid plan ──────────────────────────────
     if ([PLAN_STARTER, PLAN_BUSINESS, PLAN_PRO].includes(selectedPlan)) {
-        const activePlan = await getActivePlanName(admin);
-        if (activePlan !== PLAN_FREE) {
-            await cancelCurrentSubscription();
+        // Cancel the current paid subscription first if switching plans
+        if (sub) {
+            await billing.cancel({ subscriptionId: sub.id, prorate: true });
         }
 
-        // billing.request throws a redirect Response to Shopify's confirmation page
-        await billing.request({ plan: selectedPlan as typeof PLAN_STARTER, isTest: true });
+        // Build a return URL so Shopify redirects back here after confirmation
+        const origin = new URL(request.url).origin;
+        const returnUrl = `${origin}/app/pricing?shop=${session.shop}`;
+
+        try {
+            // billing.request() always throws — either a 401+header (XHR)
+            // or a redirect Response (document request)
+            await billing.request({
+                plan: selectedPlan as typeof PLAN_STARTER,
+                isTest: false,
+                returnUrl,
+            });
+        } catch (response: unknown) {
+            if (response instanceof Response) {
+                // XHR path: Shopify lib throws 401 with the billing URL in a header
+                const reauthUrl = response.headers.get(
+                    "X-Shopify-API-Request-Failure-Reauthorize-Url",
+                );
+                if (reauthUrl) {
+                    return { error: null, confirmationUrl: reauthUrl };
+                }
+                // Embedded/document path: redirect Response with Location header
+                if (response.status >= 300 && response.status < 400) {
+                    throw response; // let React Router follow the redirect
+                }
+            }
+            throw response;
+        }
     }
 
-    return null;
+    return { error: "Plan invalide.", confirmationUrl: null };
 };
 
 // ── Plan display data ────────────────────────────────────────────────
@@ -183,9 +211,18 @@ const planCards = [
 
 export default function Pricing() {
     const { activePlan, orderCount, orderLimit } = useLoaderData<typeof loader>();
+    const actionData = useActionData<typeof action>();
     const submit = useSubmit();
     const navigation = useNavigation();
     const isSubmitting = navigation.state !== "idle";
+
+    // When the action returns a confirmationUrl, redirect the top-level
+    // window to Shopify's billing confirmation page.
+    useEffect(() => {
+        if (actionData?.confirmationUrl) {
+            window.open(actionData.confirmationUrl, "_top");
+        }
+    }, [actionData]);
 
     const usageText = orderLimit !== null
         ? `${orderCount} / ${orderLimit} commandes utilisées ce mois-ci`
