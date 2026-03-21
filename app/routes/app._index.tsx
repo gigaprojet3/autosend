@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { type ActionFunctionArgs, type LoaderFunctionArgs } from "react-router";
 import { useFetcher, useLoaderData } from "react-router";
-import { useAppBridge } from "@shopify/app-bridge-react";
 import { Page, Layout, Text, Card, Button, BlockStack, Badge, Divider, Spinner } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import { getSessionStatus, getQrCode, initWhatsApp, clearSession, getChats } from "../services/whatsapp.server";
@@ -316,7 +315,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 export default function Index() {
   const loaderData = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
-  const shopify = useAppBridge();
 
   // Live state for status and QR (kept up to date by polling)
   const [liveStatus, setLiveStatus] = useState(loaderData.status);

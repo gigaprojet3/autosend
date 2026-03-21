@@ -96,36 +96,34 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     // ── Upgrade / switch to a paid plan ──────────────────────────────
     if ([PLAN_STARTER, PLAN_BUSINESS, PLAN_PRO].includes(selectedPlan)) {
-        const appUrl = process.env.SHOPIFY_APP_URL || new URL(request.url).origin;
-        const returnUrl = `${appUrl}/app/pricing?shop=${session.shop}`;
+        const returnUrl = `${process.env.SHOPIFY_APP_URL || new URL(request.url).origin}/app/pricing`;
 
         try {
-            // billing.request() always throws a Response (redirect to billing page)
+            // billing.request() ALWAYS throws — it never returns.
+            // For XHR: throws 401 with confirmation URL in header
+            // For embedded: throws redirect to exitIframe path
+            // For non-embedded: throws redirect to confirmation URL
             await billing.request({
                 plan: selectedPlan as typeof PLAN_STARTER,
                 isTest: true,
                 returnUrl,
             });
-        } catch (response: unknown) {
-            if (response instanceof Response) {
-                // XHR path: Shopify lib throws 401 with the billing URL in a header
-                const reauthUrl = response.headers.get(
+        } catch (thrown: unknown) {
+            if (thrown instanceof Response) {
+                // XHR path: 401 with billing confirmation URL in header
+                const confirmationUrl = thrown.headers.get(
                     "X-Shopify-API-Request-Failure-Reauthorize-Url",
                 );
-                if (reauthUrl) {
-                    return { error: null, confirmationUrl: reauthUrl };
+                if (confirmationUrl) {
+                    return { error: null, confirmationUrl };
                 }
-                // Embedded/document path: redirect Response with Location header
-                if (response.status >= 300 && response.status < 400) {
-                    throw response; // let React Router follow the redirect
-                }
+                // Embedded/document path: redirect Response — let React Router handle it
+                throw thrown;
             }
-            // Actual billing error
-            console.error("Billing error:", response);
-            return {
-                error: response instanceof Error ? response.message : "Erreur lors de la facturation.",
-                confirmationUrl: null,
-            };
+            // Actual billing error (e.g. Managed Pricing conflict)
+            console.error("Billing error:", thrown);
+            const msg = thrown instanceof Error ? thrown.message : "Erreur lors de la facturation.";
+            return { error: msg, confirmationUrl: null };
         }
     }
 

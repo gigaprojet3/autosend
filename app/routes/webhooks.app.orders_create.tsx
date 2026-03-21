@@ -56,9 +56,27 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         ? `${order.shipping_address.city}, ${order.shipping_address.country}`
         : 'N/A';
 
-    const customerName = order.customer
-        ? `${order.customer.first_name || ''} ${order.customer.last_name || ''}`.trim()
-        : 'Client inconnu';
+    // Extract customer name with multiple fallbacks
+    const customerName =
+        // 1. From customer object
+        (order.customer?.first_name || order.customer?.last_name
+            ? `${order.customer.first_name || ''} ${order.customer.last_name || ''}`.trim()
+            : null)
+        // 2. From shipping address
+        || order.shipping_address?.name
+        // 3. From billing address
+        || order.billing_address?.name
+        // 4. From email
+        || order.email || order.contact_email
+        // 5. Fallback
+        || 'Client inconnu';
+
+    console.log(`📋 Order ${order.name} — customer payload:`, JSON.stringify({
+        customer: order.customer,
+        shipping_name: order.shipping_address?.name,
+        billing_name: order.billing_address?.name,
+        email: order.email,
+    }));
 
     const message = `📦 Nouvelle Commande ${order.name}
 👤 Client : ${customerName}
