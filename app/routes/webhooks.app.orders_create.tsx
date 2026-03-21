@@ -1,7 +1,7 @@
 import type { ActionFunctionArgs } from "react-router"; // Updated import
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
-import { sendMessage, getSessionStatus } from "../services/whatsapp.server";
+import { sendMessage } from "../services/whatsapp.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
     const { topic, shop, session, admin, payload } = await authenticate.webhook(request);
@@ -17,12 +17,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     console.log(`Received ${topic} webhook for ${shop}`);
 
-    // 0. Deduplicate — skip if this order was already sent successfully
-    const alreadySent = await db.messageLog.findFirst({
-        where: { shop, orderId: String((payload as any).id), status: 'SENT' },
+    // 0. Deduplicate — skip if this order already has a log entry (SENT or PENDING)
+    const alreadyHandled = await db.messageLog.findFirst({
+        where: { shop, orderId: String(order.id) },
     });
-    if (alreadySent) {
-        console.log(`⏭️ Order ${(payload as any).name} already sent — ignoring duplicate webhook`);
+    if (alreadyHandled) {
+        console.log(`⏭️ Order ${order.name} already handled (${alreadyHandled.status}) — ignoring duplicate webhook`);
         return new Response();
     }
 
@@ -33,10 +33,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         console.log(`⏭️ No products configured for ${shop} — skipping WhatsApp send`);
         return new Response();
     }
-            
+
     const selectedProductIds = new Set(selectedProducts.map((p) => p.productId));
 
-    // Check if any line item's product_id matches a selected product
     const matchingItems = order.line_items.filter((item: any) =>
         selectedProductIds.has(String(item.product_id))
     );
@@ -57,69 +56,46 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         ? `${order.shipping_address.city}, ${order.shipping_address.country}`
         : 'N/A';
 
+    const customerName = order.customer
+        ? `${order.customer.first_name || ''} ${order.customer.last_name || ''}`.trim()
+        : 'Client inconnu';
+
     const message = `📦 Nouvelle Commande ${order.name}
-👤 Client : ${order.customer?.first_name} ${order.customer?.last_name || ''}
+👤 Client : ${customerName}
 🛒 Articles :
 ${itemsList}
 💰 Total : ${order.total_price} ${order.currency}
 📍 Addresse : ${address}`;
 
-    // 3. Send Message
-    // We need to know WHO to send to.
-    // The user requirement says: "Configuration du destinataire en sélectionnant une conversation/groupe"
-    // We haven't implemented that configuration yet!
-    // We need to store 'targetJid' (Jabber ID for WhatsApp) in the database.
-    // For MVP, let's send it to the CONNECTED phone (Self) or just log it if no target set.
-    // Wait, "to a specific conversation or group".
-    // I need to add 'targetJid' to WhatsAppSession or a Settings table.
-    // Let's assume we store it in WhatsAppSession for now for simplicity, or just hardcode/default to 'me' ID if possible?
-    // Sending to 'me' (myself) is possible in WhatsApp.
-
-    // Let's look up the session to get the targetJid
+    // 3. Look up target
     const whatsappSession = await db.whatsAppSession.findUnique({ where: { shop } });
 
-    // We need to add 'targetJid' to the schema!
-    // I'll add a Todo to update schema. For now, let's log.
-
-    let status = 'FAILED';
-    let error = null;
-
-    try {
-        // Assuming we have a configured recipient. 
-        // If NOT, maybe we send to the own number? 
-        // Baileys: sock.sendMessage(sock.user.id, ...)
-        // But we need access to the socket.
-        // sendMessage(shop, recipient, text)
-
-        // We will try to send to the user's own number if no target is set?
-        // Or just fail.
-
-        // TEMPORARY: fail if no target.
-        // We will update this after adding settings page.
-
-        if (whatsappSession?.targetJid) {
-            await sendMessage(shop, whatsappSession.targetJid, message);
-            status = 'SENT';
-        } else {
-            error = "No target (group/user) configured for this shop.";
-            console.log("No target configured, message would be:", message);
-        }
-    } catch (e: any) {
-        console.error("Failed to send WhatsApp message", e);
-        error = e.message;
+    if (!whatsappSession?.targetJid) {
+        await db.messageLog.create({
+            data: { shop, orderId: String(order.id), customerName, status: 'FAILED', content: message, error: 'No target configured' },
+        });
+        console.log(`❌ No target configured for ${shop}`);
+        return new Response();
     }
 
-    // 4. Log to DB
-    await db.messageLog.create({
-        data: {
-            shop,
-            orderId: String(order.id),
-            customerName: `${order.customer?.first_name} ${order.customer?.last_name}`,
-            status,
-            content: message,
-            error
-        }
+    // 4. Create PENDING log IMMEDIATELY (blocks duplicate webhooks)
+    const logEntry = await db.messageLog.create({
+        data: { shop, orderId: String(order.id), customerName, status: 'PENDING', content: message },
     });
+
+    // 5. Return 200 to Shopify RIGHT AWAY — send WhatsApp in background
+    //    This prevents Shopify from retrying the webhook due to timeout.
+    sendMessage(shop, whatsappSession.targetJid, message)
+        .then(() => {
+            db.messageLog.update({ where: { id: logEntry.id }, data: { status: 'SENT' } })
+                .catch((e) => console.error('❌ Failed to update log to SENT:', e));
+            console.log(`✅ WhatsApp message sent for order ${order.name}`);
+        })
+        .catch((e) => {
+            db.messageLog.update({ where: { id: logEntry.id }, data: { status: 'FAILED', error: e.message } })
+                .catch((err) => console.error('❌ Failed to update log to FAILED:', err));
+            console.error(`❌ Failed to send WhatsApp for order ${order.name}:`, e);
+        });
 
     return new Response();
 };

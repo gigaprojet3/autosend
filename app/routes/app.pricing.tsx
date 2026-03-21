@@ -96,21 +96,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     // ── Upgrade / switch to a paid plan ──────────────────────────────
     if ([PLAN_STARTER, PLAN_BUSINESS, PLAN_PRO].includes(selectedPlan)) {
-        // Cancel the current paid subscription first if switching plans
-        if (sub) {
-            await billing.cancel({ subscriptionId: sub.id, prorate: true });
-        }
-
-        // Build a return URL so Shopify redirects back here after confirmation
-        const origin = new URL(request.url).origin;
-        const returnUrl = `${origin}/app/pricing?shop=${session.shop}`;
+        const appUrl = process.env.SHOPIFY_APP_URL || new URL(request.url).origin;
+        const returnUrl = `${appUrl}/app/pricing?shop=${session.shop}`;
 
         try {
-            // billing.request() always throws — either a 401+header (XHR)
-            // or a redirect Response (document request)
+            // billing.request() always throws a Response (redirect to billing page)
             await billing.request({
                 plan: selectedPlan as typeof PLAN_STARTER,
-                isTest: false,
+                isTest: true,
                 returnUrl,
             });
         } catch (response: unknown) {
@@ -127,7 +120,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
                     throw response; // let React Router follow the redirect
                 }
             }
-            throw response;
+            // Actual billing error
+            console.error("Billing error:", response);
+            return {
+                error: response instanceof Error ? response.message : "Erreur lors de la facturation.",
+                confirmationUrl: null,
+            };
         }
     }
 
@@ -235,6 +233,12 @@ export default function Pricing() {
     return (
         <Page title="Plan d'abonnement">
             <BlockStack gap="400">
+                {actionData?.error && (
+                    <Banner tone="critical">
+                        <p>{actionData.error}</p>
+                    </Banner>
+                )}
+
                 <Banner tone="info">
                     <p><strong>Plan actuel :</strong> {activePlan} — {usageText}</p>
                 </Banner>
