@@ -98,6 +98,16 @@ model SelectedProduct {
   @@index([shop])
 }
 
+model PlanUsage {
+  id                     String   @id @default(uuid())
+  shop                   String   @unique
+  currentPlan            String   @default("Free")
+  orderCountOffset       Int      @default(0)   // subtracted from raw monthly count to get effective count
+  previousPlanName       String?                 // plan before the last switch
+  previousPlanCount      Int?                    // effective count at moment of leaving previous plan
+  updatedAt              DateTime @updatedAt
+}
+
 model MessageLog {
   id             String   @id @default(uuid())
   shop           String

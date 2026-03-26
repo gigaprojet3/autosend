@@ -378,6 +378,36 @@ export async function initWhatsApp(shop: string) {
   }
 }
 
+/**
+ * If there is no active in-memory session but the DB has saved credentials,
+ * auto-restore the WhatsApp connection so the user doesn't have to click
+ * "Connect" every time the server restarts.
+ * Returns the (possibly updated) session status.
+ */
+export async function restoreSessionIfNeeded(shop: string): Promise<'initializing' | 'needs_qr' | 'connected' | 'disconnected'> {
+  const current = sessionStatus.get(shop);
+  // Already active or in progress — nothing to do
+  if (current === 'connected' || current === 'initializing' || current === 'needs_qr') {
+    return current;
+  }
+
+  // Check if DB has credentials for this shop
+  const dbSession = await db.whatsAppSession.findUnique({ where: { shop } });
+  if (!dbSession?.creds) {
+    return 'disconnected';
+  }
+
+  // Credentials exist → auto-restore
+  console.log(`🔄 Auto-restoring WhatsApp session for ${shop} (creds found in DB)`);
+  try {
+    await initWhatsApp(shop);
+    return sessionStatus.get(shop) || 'initializing';
+  } catch (error) {
+    console.error(`❌ Auto-restore failed for ${shop}:`, error);
+    return 'disconnected';
+  }
+}
+
 export async function getQrCode(shop: string) {
   return qrCodes.get(shop);
 }

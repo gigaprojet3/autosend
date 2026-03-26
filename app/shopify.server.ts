@@ -6,7 +6,7 @@ import {
   shopifyApp,
 } from "@shopify/shopify-app-react-router/server";
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
-import prisma from "./db.server";
+import { prismaBase } from "./db.server";
 
 import { PLAN_FREE, PLAN_STARTER, PLAN_BUSINESS, PLAN_PRO, PLANS } from "./plans";
 export { PLAN_FREE, PLAN_STARTER, PLAN_BUSINESS, PLAN_PRO, PLANS };
@@ -18,7 +18,7 @@ const shopify = shopifyApp({
   scopes: process.env.SCOPES?.split(","),
   appUrl: process.env.SHOPIFY_APP_URL || "",
   authPathPrefix: "/auth",
-  sessionStorage: new PrismaSessionStorage(prisma),
+  sessionStorage: new PrismaSessionStorage(prismaBase),
   distribution: AppDistribution.AppStore,
   billing: {
     [PLAN_STARTER]: {
