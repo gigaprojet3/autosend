@@ -14,17 +14,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const now = new Date();
     const periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
-    const rawCount = await db.messageLog.count({
+    const orderCount = await db.messageLog.count({
         where: { shop, createdAt: { gte: periodStart } },
     });
-
-    const usage = await db.planUsage.upsert({
-        where: { shop },
-        create: { shop },
-        update: {},
-    });
-
-    const orderCount = Math.max(0, rawCount - usage.orderCountOffset);
 
     return Response.json({ orderCount });
 };

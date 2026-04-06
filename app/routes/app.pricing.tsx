@@ -105,12 +105,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         }
     }
 
-    const effectiveCount = Math.max(0, rawCount - usage.orderCountOffset);
     const planMeta = PLANS[activePlan] ?? PLANS[PLAN_FREE];
 
     return {
         activePlan,
-        orderCount: effectiveCount,
+        orderCount: rawCount,
         orderLimit: planMeta.orderLimit,
     };
 };

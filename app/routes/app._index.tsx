@@ -78,14 +78,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     where: { shop, createdAt: { gte: periodStart } },
   });
 
-  // Apply offset
-  const usage = await db.planUsage.upsert({
-    where: { shop },
-    create: { shop },
-    update: {},
-  });
-  const effectiveCount = Math.max(0, orderCount - usage.orderCountOffset);
-
   return {
     shop,
     status,
@@ -94,7 +86,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     chats,
     selectedProducts,
     activePlan,
-    orderCount: effectiveCount,
+    orderCount,
     orderLimit: planMeta.orderLimit,
   };
 };
