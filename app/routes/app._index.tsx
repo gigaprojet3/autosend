@@ -382,6 +382,7 @@ export default function Index() {
   const waIntent = waLoading ? (waFetcher.formData?.get("intent") as string | null) : null;
   const prodLoading = productFetcher.state !== "idle";
 
+  const orderCountFetcher = useFetcher<{ orderCount: number }>();
   const [showProductSelector, setShowProductSelector] = useState(false);
   const [shopProducts, setShopProducts] = useState<Array<{ id: string; title: string; imageUrl: string | null }>>([]);
   const [checkedProducts, setCheckedProducts] = useState<Set<string>>(new Set());
@@ -405,6 +406,7 @@ export default function Index() {
     }
   }, [productFetcher.data]);
 
+  // ── Fast poll (1 s) while not yet connected — updates WA status + QR ──
   useEffect(() => {
     if (isConnected) return;
     const controller = new AbortController();
@@ -425,14 +427,24 @@ export default function Index() {
     return () => { controller.abort(); clearTimeout(timeoutId); };
   }, [isConnected]);
 
+  // ── Order count refresh (15 s) via useFetcher — fires immediately ──
+  useEffect(() => {
+    const shop = loaderData.shop;
+    const refresh = () => orderCountFetcher.load(`/api/order-count?shop=${encodeURIComponent(shop)}`);
+    refresh();
+    const interval = setInterval(refresh, 15_000);
+    return () => clearInterval(interval);
+  }, [loaderData.shop]);
+
   const step1Done = isConnected;
   const step2Done = !!targetJid;
   const step3Done = selectedProducts.length > 0;
   const stepsComplete = [step1Done, step2Done, step3Done].filter(Boolean).length;
   const allDone = stepsComplete === 3;
 
-  const { activePlan, orderCount, orderLimit } = loaderData;
-  const usagePercent = orderLimit !== null ? Math.min(100, Math.round((orderCount / orderLimit) * 100)) : 0;
+  const { activePlan, orderLimit } = loaderData;
+  const liveOrderCount = (orderCountFetcher.data as any)?.orderCount ?? loaderData.orderCount;
+  const usagePercent = orderLimit !== null ? Math.min(100, Math.round((liveOrderCount / orderLimit) * 100)) : 0;
   const isNearLimit = orderLimit !== null && usagePercent >= 80;
 
   const handleOpenSelector = useCallback(() => {
@@ -503,8 +515,8 @@ export default function Index() {
                   <Text as="p" variant="bodyMd">Commandes ce mois</Text>
                   <Text as="p" variant="bodyMd" fontWeight="bold">
                     {orderLimit !== null
-                      ? `${orderCount} / ${orderLimit}`
-                      : `${orderCount} (illimité)`
+                      ? `${liveOrderCount} / ${orderLimit}`
+                      : `${liveOrderCount} (illimité)`
                     }
                   </Text>
                 </InlineStack>

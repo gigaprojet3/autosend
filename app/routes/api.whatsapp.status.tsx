@@ -1,5 +1,6 @@
 import { type LoaderFunctionArgs } from "react-router";
 import { getSessionStatus, getQrCode } from "../services/whatsapp.server";
+import db from "../db.server";
 
 // This route is called via fetch() from the embedded frontend,
 // so we avoid authenticate.admin which redirects instead of returning JSON.
@@ -15,5 +16,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const status = await getSessionStatus(shop);
     const qr = await getQrCode(shop);
 
-    return Response.json({ status, qr });
+    // Effective order count for this month (with offset applied)
+    const now = new Date();
+    const periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const rawCount = await db.messageLog.count({
+        where: { shop, createdAt: { gte: periodStart } },
+    });
+    const usage = await db.planUsage.upsert({
+        where: { shop },
+        create: { shop },
+        update: {},
+    });
+    const orderCount = Math.max(0, rawCount - usage.orderCountOffset);
+
+    return Response.json({ status, qr, orderCount });
 };
