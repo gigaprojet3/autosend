@@ -71,15 +71,25 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         // 5. Fallback
         || 'Client inconnu';
 
+    // Extract phone number with multiple fallbacks
+    const customerPhone =
+        order.customer?.phone
+        || order.phone
+        || order.shipping_address?.phone
+        || order.billing_address?.phone
+        || 'Non fourni';
+
     console.log(`📋 Order ${order.name} — customer payload:`, JSON.stringify({
         customer: order.customer,
         shipping_name: order.shipping_address?.name,
         billing_name: order.billing_address?.name,
         email: order.email,
+        phone: customerPhone,
     }));
 
     const message = `📦 Nouvelle Commande ${order.name}
 👤 Client : ${customerName}
+📞 Téléphone : ${customerPhone}
 🛒 Articles :
 ${itemsList}
 💰 Total : ${order.total_price} ${order.currency}
